@@ -172,3 +172,18 @@ graph LR
     train_rffpsr -->|uses any model dict| run_psr
     train_rffpsr -->|uses LDS model dict| run_lds
 ```
+
+### Model dictionary contract
+
+Every trained model - RFF-PSR, ARX, Last-Obs, HSE-PSR, and LDS - is
+represented as a plain Python `dict` with the following **mandatory keys**
+
+| Key        | Type                                      | Description               |
+|------------|-------------------------------------------|---------------------------|
+| `'f0'`         | `ndarray(p,1)`                              | Initial belief state      |
+| `'future_win'` | `int`                                       | prediction horizon *k*    |
+| `'filter'`     | `callable(model, f, o, a) -> f_new`         | State update function     |
+| `'predict'`    | `callable(model, f, a) -> o_hat`            | 1-step prediction         |
+| `'test'`       | `callable(model, f, a_win) -> O_hat (d, k)` | k-step horizon prediction |
+
+`run_psr.py` calls only these five keys, making every model a drop-in replacement for any other without changing the evaluation code.
