@@ -113,3 +113,62 @@ rff-psr-py/                                            #
         │   └── ridge_regression.py                    # Direct ridge regression: $W = Y X^T (X X^T + \lambda I)^{-1}$
         └── validate_jacobian.py                       # compares analytical vs numerical Jacobian 
 ```
+
+### Dependency graph (high level)
+
+```mermaid
+graph LR
+    exp_synth["exp_synth.py"] --> train_rffpsr["train_rffpsr.py"]
+    exp_synth --> run_psr["run_psr.py"]
+    exp_synth --> run_lds["run_lds.py"]
+
+    %% Grouping the baseline dependencies together
+    subgraph baselines ["baselines/"]
+        last_obs["last_obs_predictor.py<br/>(uses utils/feats)"]
+        train_hsepsr["train_hsepsr.py<br/>(uses utils/feats, kernel)"]
+        train_lds_base["train_lds.py<br/>(uses numpy only)"]
+        train_rff_ar["train_rff_ar.py<br/>(uses utils/feats, kernel, linalg, regression)"]
+    end
+
+    %% Dependencies on the baselines
+    exp_synth --> last_obs
+    exp_synth --> train_hsepsr
+    exp_synth --> train_lds_base
+    exp_synth --> train_rff_ar
+
+    %% Dependencies of train_rffpsr.py
+    subgraph feats ["utils/feats/"]
+        flatten["flatten_features.py"]
+        finite_past["finite_past_feature_extractor.py"]
+        finite_future["finite_future_feature_extractor.py"]
+    end
+
+    train_rffpsr --> flatten
+    train_rffpsr --> finite_past
+    train_rffpsr --> finite_future
+
+    subgraph linalg ["utils/linalg/"]
+        kr_product["kr_product.py"]
+        rand_svd_f["rand_svd_f.py"]
+        blk_func["blk_func.py"]
+        reg_divide["reg_divide.py"]
+        rowkron["rowkron.py"]
+    end
+
+    train_rffpsr --> kr_product
+    train_rffpsr --> rand_svd_f
+    train_rffpsr --> blk_func
+    train_rffpsr --> reg_divide
+    train_rffpsr --> rowkron
+
+    subgraph regression ["utils/regression/"]
+        ridge["ridge_regression.py"]
+        cg_ridge["cg_ridge.py"]
+    end
+
+    train_rffpsr --> ridge
+    train_rffpsr --> cg_ridge
+
+    train_rffpsr -->|uses any model dict| run_psr
+    train_rffpsr -->|uses LDS model dict| run_lds
+```
