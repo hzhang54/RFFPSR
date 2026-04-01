@@ -330,3 +330,22 @@ This is the core of the *supervised learning* approach: all parameters are
 estimated by ordinary ridge regression on the training data.
 
 **Notation used throughout:**
+
+| Symbol                                                        | Dimension                              | Meaning                                                                |
+|---------------------------------------------------------------|----------------------------------------|------------------------------------------------------------------------|
+| $N$                                                           | scalar                                 | number of training (time-step) samples                                 |
+| $L$                                                           | scalar                                 | history window length (`past_win`)                                     |
+| $k$                                                           | scalar                                 | future window length (`future_win`)                                    |
+| $D$                                                           | scalar                                 | number of RFF frequencies                                              |
+| $p$                                                           | scalar                                 | projected (state) dimension                                            |
+| $\lambda$                                                     | scalar                                 | ridge regularisation parameter                                         |
+| $d_o, d_a$                                                    | scalar                                 | observation / action dimension                                         |
+| $\varphi_h, \varphi_o, \varphi_a, \varphi_{to}, \varphi_{ta}$ | $\mathbb{R}^{2D}$                      | raw RFF maps for $h, o, a, q^o, q^a$                                   |
+| $\psi_h, \psi_o, \psi_a, \psi_{to}, \psi_{ta}$                | $\mathbb{R}^{p}$ or $\mathbb{R}^{p+1}$ | projected features                                                     |
+| $\psi_{oo}$                                                   | $\mathbb{R}^{K_{oo}}$                  | projected Khatri-Rao self-product $\psi_o \otimes \psi_o$              |
+| $\psi_{\eta}$                                                 | $\mathbb{R}^{K_\eta}$                  | projected extended test-action: $\psi_a \otimes \psi_{ta} (q^a_{t+1})$ |
+| $\psi_{\varepsilon}$                                          | $\mathbb{R}^{K_\varepsilon}$           | projected extended test-obs: $\psi_{to}(q^o_{t+1}) \otimes \psi_o$     |
+| $f_t$                                                         | $\mathbb{R}^{K_s}$                     | PSR belief state at time $t$                                           |
+| $K_s, K_h, K_o, K_a, \ldots$                                  | scalar                                 | projected dimensions for each feature type                             |
+
+
