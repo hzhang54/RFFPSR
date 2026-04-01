@@ -187,3 +187,146 @@ represented as a plain Python `dict` with the following **mandatory keys**
 | `'test'`       | `callable(model, f, a_win) -> O_hat (d, k)` | k-step horizon prediction |
 
 `run_psr.py` calls only these five keys, making every model a drop-in replacement for any other without changing the evaluation code.
+
+---
+
+## 3. Theoretical Background
+
+### 3.1 predictive State Representations
+
+A **Predictive State Representation (PSR)** is a model of a *controlled
+dynamical system* - a system driven by external actions $a_t \in \mathbb{R}^{d_a}$
+that emits observations $o_t \in \mathbb{R}^{d_o}$ at each time step $t$.
+Unlike Hidden Markov Models or Kalman filters, a PSR does not posit a latent
+variable: the belief state $f_t$ is defined entirely in terms of **predictions
+about future observations**.
+
+Formally, let
+
+$$h_t = [o_{t-L}, \ldots, o_{t-1},\; a_{t-L}, \ldots, a_{t-1}] \in \mathbb{R}^{(d_o + d_a) L}$$
+
+be the **history window** of length $L$ (the last $L$ observation-action pairs). and let
+
+$$q_t = [o_{t}, \ldots, o_{t+k-1},\; a_{t}, \ldots, a_{t+k-1}] \in \mathbb{R}^{(d_o + d_a) k} $$
+
+be the **test window** (future window) of length $k$.  The PSR state $f_t$
+is chosen so that it is a *sufficient statistic* for predicting any function
+of the future $q_t$ conditioned on the history $h_t$:
+
+$$f_t \text{ captures } P(q_t \mid h_t).$$
+
+At each time step the system provides three primitives:
+
+| Primitive   | Signature                              | Description                                          |
+|-------------|----------------------------------------|------------------------------------------------------|
+| **filter**  | $(f_t, o_t, a_t) \to f_{t+1}$          | Incorporate new evidence; shift belief state forward |
+| **predict** | $(f_t, a_t) \to \hat{o}_t$             | One-step observation prediction                      |
+| **test**    | $(f_t, a_{t:t+k}) \to \hat{o}_{t:t+k}$ | $k$-step horizon prediction                          |
+
+---
+
+### 3.2 Kernel Embedding and HSE-PSR
+
+The key statistical quantities needed for filtering and prediction are
+**cross-covariance operators** between the kernel embeddings of $h_t$ and
+$q_t$.  For an RBF kernel $\kappa(x, y) = \exp(-\|x-y\|^2 / (2s^2))$, the
+embedding is the feature map $\varphi(x)$ into the reproducing kernel
+Hilbert space (RKHS).  The operator
+
+$$
+\mathcal{C}_{q \mid h} = \mathcal{C}_{qh}\,\mathcal{C}_{hh}^{-1}
+$$
+
+is the conditional mean embedding of $P(q_t \mid h_t)$ (Song et al., 2009;
+Boots et al., 2013).
+
+**HSE-PSR** (Hilbert Space Embedding PSR) represents $f_t$ as this conditional
+mean embedding, estimated from data via kernel ridge regression over the
+training sample:
+
+$$
+\hat{\mathcal{C}}_{q \mid h} = K_{hq}\,(K_{hh} + \lambda N I)^{-1}
+$$
+
+where $K_{hh} \in \mathbb{R}^{N \times N}$ is the Gram matrix. This has two
+critical drawbacks:
+
+- **Memory:** $O(N^2)$ to store $K_{hh}$
+- **Time:** $O(N^3)$ to solve the linear system.
+
+For the synthetic benchmark (N = a few thousands) HSR-PSR is feasible, but
+disabled by default (`--no-hsepsr`) because of these costs.
+
+---
+
+### 3.3 Random Fourier Feature Approximation
+
+**RFF-PSR** replaces the exact kernel with Bochner's theorem (Rahimi & Recht,
+2007): a shift-invariant kernel $\kappa(x, y) = \kappa(x-y)$ can be written as
+
+$$
+\kappa(x,y) = \mathbb{E}_{w \sim p(w)} \left[ e^{i w^\top (x - y)}\right] 
+$$
+
+where $p(w) = \mathcal{F} \{\kappa\}$ is the Fourier transform of the kernel.
+For the Gaussian (RBF) kernel with bandwidth $s$:
+
+$$
+p(w) = \mathcal{N}(0,\, s^{-2} I).
+$$
+
+Drawing $D$ i.i.d. frequency vectors $w_j \sim p(w)$, the approximation
+
+$$
+\varphi(x) = \frac{1}{\sqrt{D}} \begin{bmatrix} \cos(W x)\\\sin(W x) \end{bmatrix}
+\in \mathbb{R}^{2D}, \qquad
+W \in \mathbb{R}^{D \times d}, \quad W_{j\cdot} = w_j^\top
+\tag{1}$$
+
+satisfies $\varphi(x)^\top \varphi(y) \approx \kappa(x, y)$. The implementation
+is in [python/utils/kernel/func_rff.py](python/utils/kernel/func_rff.py).
+
+With RFF, the $N \times N$ Gram matrices become products of $N \times 2D$
+feature matrices. Memory drops from $O(N^2)$ to $O(N D)$, and the dominant
+cost becomes $O(N D p)$ with a subsequent SVD-based projection to $p \ll D$
+dimensions.
+
+**Bandwidth selection** uses the *median heuristic* (Gretton et al., 2012):
+
+$s = \sqrt{\text{median}_i(\|x_i - x_j\|^2)}$ over a random subsample of up
+to 5 000 points. Implemented in
+[python/utils/kernel/median_bandwidth.py](python/utils/kernel/median_bandwidth.py).
+
+---
+
+### 3.4 Dimensionality Reduction
+
+Even with RFF, a $2D$-dimensional feature vector can be large.  The paper
+reduces each feature type to $p$ dimensions via a **randomised SVD**
+(Halko, Martinsoson & Tropp, 2011):
+
+$$
+U = \text{rand\_svd}(\Phi), \qquad
+\psi(x) = U^\top \varphi(x) \in \mathbb{R}^p.
+$$
+
+The randomised SVD is applied to the empirical feature matrix
+$\Phi \in \mathbb{R}^{2D \times N}$ for each feature type ($h$, $o$, $a$,
+$q^o$, $q^a$, and derived products).  An optional **bias augmentation**
+appends a constant 1 to the projected feature, controlled by the `const`
+option bitmask:
+
+$$
+\psi_\text{aug}(x) = \begin{bmatrix} U^\top \varphi(x) \\ 1 \end{bmatrix} \in \mathbb{R}^{p+1}.
+$$
+
+Implemented in [python/utils/linalg/rand_svd_f.py](python/utils/linalg/rand_svd_f.py).
+
+---
+
+### 3.5 Two-Stage Regression (Algorithm 1)
+
+This is the core of the *supervised learning* approach: all parameters are
+estimated by ordinary ridge regression on the training data.
+
+**Notation used throughout:**
