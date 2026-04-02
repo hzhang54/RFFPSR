@@ -402,3 +402,91 @@ W_{s1a} = \text{ridge}\!\left(\psi_h \otimes \psi_{ta},\; \psi_{to},\; \lambda\r
 \tag{S1A}
 $$
 
+$$\text{S1B}: \quad
+W_{s1b} = \text{ridge}\!\left(\psi_h \otimes \psi_\eta,\; \psi_\varepsilon,\; \lambda\right),
+\quad W_{s1b} \in \mathbb{R}^{K_{\varepsilon} \times K_h}
+\tag{S1B}
+$$
+
+The state is $f_t = W_{s1a}\, \psi_h(h_t)$, projected to $K_s$ dimensions via
+randomised SVD.
+
+**Stage 2**
+
+After state projection $f_t \in \mathbb{R}^{K_s}$, a second ridge regression
+predicts the extended-future and obs-covariance features from the state. The
+two sub-weights are:
+
+$$
+W_{s2, \text{ex}} \in \mathbb{R}^{K_\varepsilon \times K_s}
+\quad \text{(state -> extended future)}
+$$
+
+$$
+W_{s2,oo} \in \mathbb{R}^{K_{oo} \times K_s K_a}
+\quad \text{(state} \otimes \text{action} \rightarrow \text{obs covariance)}
+$$
+
+A third regression produces the horizon prediction weight:
+
+$$W_{s2, h} \in \mathbb{R}^{d_o k \times K_s K_{ta}}
+\quad \text{(state} \otimes \text{test-action} \rightarrow \text{raw future obs window)}
+$$
+
+---
+
+### 3.6 Filtering (Paper S3.3, Equations 6-10)
+
+Given state $f_t$, observation $o_t$, and action $a_t$, the filter computes
+$f_{t+1}$ in three steps implemented in `rffpsr_filter_core`:
+
+**Step 1 - Obs-Covariance column** (Eq. 8):
+
+$$
+C_{oo, \text{prj}} = \operatorname{reshape}(W_{s2,oo}\,f_t,\; K_{oo}, K_a)\,\psi_a(a_t)
+\in \mathbb{R}^{K_{oo}}, 
+$$
+
+$$
+C_{oo} = \operatorname{reshape}(U_{oo}\,C_{oo, \text{prj}},\; K_o, K_o)
+\in \mathbb{R}^{K_o \times K_o}.
+$$
+
+**Step 2 - Obs-likelihood weight** (Eq. 9):
+
+$$
+v = \left( C_{oo}^\top C_{oo} + \lambda I \right)^{-1} C_{oo}^\top\,\psi_o(o_t)
+\in \mathbb{R}^{K_o}.
+$$
+
+**Step 3 - State shift** (Eq. 10):
+
+$$
+C_\text{ex} = \operatorname{reshape} (W_{s2, \text{ex}}\,f_t,\; K_\varepsilon, K_\eta),
+$$
+
+$$
+B = \operatorname{reshape}\!\left(\operatorname{reshape}(U_\eta^\top,\; K_\eta K_{ta}, K_a)\, \psi_a(a_t),\; K_\eta, K_{ta}\right),
+$$
+
+$$
+C_{\varepsilon, ta} = C_\text{ex}\,B \in \mathbb{R}^{K_\varepsilon \times K_{ta}},
+$$
+
+$$
+A = \operatorname{reshape}\!\left( v^\top U_{\varepsilon, \text{flat}},\; K_{to}, K_\varepsilon\right),
+\qquad U_{\varepsilon, \text{flat}} = \operatorname{reshape}(U_{\varepsilon},\; K_o,\; K_{to} K_\varepsilon),
+$$
+
+$$
+f_{t+1} = U_{st}^\top\,\operatorname{vec}(A\,C_{\varepsilon, ta}).
+$$
+
+**Prediction** uses the horizon weight:
+
+$$
+\hat{o}_{t:t+k} = \operatorname{reshape}\!\left(W_{s2,h}\,\operatorname{vec}(\psi_f \otimes \psi_{ta}),\; d_o, k \right).
+$$
+
+---
+
