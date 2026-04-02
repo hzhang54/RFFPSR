@@ -349,3 +349,56 @@ estimated by ordinary ridge regression on the training data.
 | $K_s, K_h, K_o, K_a, \ldots$                                  | scalar                                 | projected dimensions for each feature type                             |
 
 
+**Feature construction summary**
+
+History: $h_t = [o_{t-L:t-1}; a_{t-L:t-1}] \rightarrow \psi_h \in \mathbb{R}^{K_h}$
+
+Test (future): $q_t = [o_{t:t+k-1}; a_{t:t+k-1}] \rightarrow \psi_{to}, \psi_{ta} \in \mathbb{R}^{K_{to}}, \mathbb{R}^{K_{ta}}$
+
+Shifted test: $q_{t+1} = [o_{t+1:t+k}; a_{t+1:t+k}]$
+
+Extended: $\varphi_{\eta} = \psi_a(a_t) \otimes \psi_{ta}(q^a_{t+1}) \rightarrow U_{\eta}^T \rightarrow \mathbb{R}^{K_{\eta}}$
+
+Extended: $\varphi_{\varepsilon} = \psi_{to}(q^o_{t+1}) \otimes \psi_o(o_t) \rightarrow U_{\varepsilon}^T \rightarrow \mathbb{R}^{K_{\varepsilon}}$
+
+Obs product: $\varphi_{oo} = \psi_o(o_t) \otimes \psi_o(o_t) \rightarrow U_{oo}^T \rightarrow \mathbb{R}^{K_{oo}}$
+
+**Stage 1 - Joint variant (`s1_method='joint'`)**
+
+The S1 target is a stacked matrix of six Khatri-Rao blocks:
+
+$$
+\text{out}_{S1}[:,i] = 
+\begin{bmatrix}
+\psi_{ta} \otimes \psi_{to} \\
+\psi_{ta} \otimes \psi_{ta} \\
+\psi_\eta \otimes \psi_\varepsilon \\
+\psi_\eta \otimes \psi_\eta \\
+\psi_a  \otimes \psi_{oo} \\
+\psi_a \otimes \psi_a \\
+\end{bmatrix},
+\qquad
+W_{S1} = \text{ridge}\!\left(\psi_h,\; \text{out}_{S1},\; \lambda\right).
+\tag{5}
+$$
+
+Each block encodes a joint conditional moment.  The state is then recovered
+by a conditional normalisation (regularised division):
+
+$$
+f_t = \operatorname{vec}\!\left(\hat{C}_{to|ta}\right), \quad
+\hat{C}_{to|ta} = \hat{C}_{to \cdot ta} \hat{C}_{ta \cdot ta}^\top
+\left( \hat{C}_{ta \cdot ta} \hat{C}_{ta \cdot ta}^\top + \lambda I \right)^{-1}
+$$
+
+**Stage 1 - Conditional variant (`s1_method='cond'`)**
+
+The conditional path avoids the large joint KR target and instead performs
+two conditional regressions directly:
+
+$$\text{S1A}: \quad
+W_{s1a} = \text{ridge}\!\left(\psi_h \otimes \psi_{ta},\; \psi_{to},\; \lambda\right),
+\quad W_{s1a} \in \mathbb{R}^{K_{to} \times K_{h}}
+\tag{S1A}
+$$
+
