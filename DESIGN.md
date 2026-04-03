@@ -764,3 +764,34 @@ included.  The returned `series_index` (1-based) and `time_index` (0-based)
 are used later to group columns by trajectory during the BPTT refinement.
 
 ---
+
+### 4.3 Kernel utilities (`utils/kernel/`)
+
+---
+
+#### `func_rff.py`
+
+```python
+def func_rff(
+    W : np.ndarray,       # frequency matrix (D, d), rows ~ N(0, I/s^2)
+    X : np.ndarray        # input matrix     (d, N)
+) -> np.ndarray:          # RFF features     (2D, N)
+```
+
+Implements the random Fourier feature map (paper S3.1, Eq. 1):
+
+$$
+\varphi(x) = \frac{1}{\sqrt{D}}\begin{bmatrix}
+\cos(W x)\\
+\sin(W x)
+\end{bmatrix}
+$$
+
+For a batch of $N$ inputs stacked as columns, the output is the
+$(2D \times N)$ matrix of feature vectors.  The approximation satisfies
+$\varphi(x)^\top \varphi(y) \approx \kappa(x,y)$ for the RBF kernel
+$\kappa(x,y) = \exp(-\|x-y\|^2 / (2s^2))$ when the rows of $W$ are drawn
+i.i.d. from $\mathcal{N}(0, s^{-2} I)$.  The approximation quality improves
+as $D \to \infty$; the paper uses $D = 1000$ by default.
+
+
