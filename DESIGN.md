@@ -552,3 +552,215 @@ _____________________________________________________________________
 | Song, Gretton & Fukumizu (2009). *Kernel Embeddings of Conditional Distributions.*                                                                             | Conditional mean embedding theory                            |
 | Halko, Martinsson & Tropp (2011). *Finding Structure with Randomness.* SIAM Review                                                                             | Basis for `rand_svd_f.py`                                    |
 | Gretton et al. (2012). *A Kernel Two-Sample Test.* JMLR                                                                                                        | Median bandwidth heuristic - `median_bandwidth.py`           |
+
+
+---
+
+## 4. Utility Layer
+
+This section documents all 17 utility modules that support the core algorithm.
+They are organized into five sub-packages: `feats/`, `kernels/`, `linalg/`, 
+`regression/`, and the top-level utils root.
+
+---
+
+### 4.1 Root utilities (`utils/`)
+
+```python
+def normalize_sequences(
+    X: List[np.ndarray]          # list of (d, T_i) sequences
+) -> Tuple[
+    List[np.ndarray],            # normalized sequences
+    np.ndarray,                  # means_X shape (d,)
+    np.ndarray                   # stds shape (d,)
+]
+```
+
+Computes a global (pooled) per-dimension mean and standard deviation across
+all time steps of all trajectories, then subtracts the mean and divides by
+the standard deviation sequence-by-sequence.  Dimensions with zero variance
+are left unchanged (division by zero would produce NaN; the caller is expected
+to filter such dimensions beforehand).  Called in `exp_synth.py` before
+training to whiten the input, which ensures the median-heuristic bandwidth
+estimation in S3.3 operates in a well-conditioned space.
+
+**Equations:**
+
+$$
+\mu_d = \frac{1}{N}\sum_i\sum_t X_i[d,t], \qquad
+ \sigma_d = \sqrt{\frac{1}{N}\sum_i\sum_t X_i[d,t]^2 - \mu_d^2}, \qquad
+ Y_i = \frac{X_i - \mu}{\sigma} 
+$$
+
+---
+
+#### `numerical_jacobian.py`
+
+```python
+def numerical_jacobian(
+    d   : int,                # output dimension of f
+    f   : Callable,           # f(x) -> ndarray (d,)
+    x   : np.ndarray,         # evaluation point, shape (n,)
+    h   : float = 1e-5        # finite-difference step
+) -> np.ndarray:              # Jacobian J, shape (d, n)
+```
+
+Implements the **central-difference jacobian**:
+
+$$
+J[:,i] = \frac{f(x + h\,e_i) - f(x - h\,e_i)}{2h}
+$$
+
+Requires $2n$ function evaluations.  Used exclusively as the *reference* 
+Jacobian in `validate_jacobian.py` to check the correctness of the
+analytical BPTT gradients derived in paper S4 (Eqs. 11-17). The step
+size $h = 10^{-5}$ balances truncation error vs. floating-point cancellation.
+
+---
+
+#### `validate_jacobian.py`
+
+```python
+def validate_jacobian(
+    d             : int,                # 
+    f_analytical  : Callable,           # f_analytic(x) -> J_ana, shape (d,n)
+    f_numeric     : Callable,           # f_numeric(x)  -> y,     shape (d,)
+    x             : np.ndarray,         # evaluation point
+    h             : float = 1e-5,       
+    tol           : float = 1e-4        
+) -> dict:                              # { 'J_analytical', 'J_numerical',
+                                        #   'max_abs_err', 'max_rel_err', 'passed'}    
+```
+
+Compares an analytical Jacobian $J_\text{ana}$ against the numerical
+approximation $J_\text{num}$ returned by `numerical_jacobian`.  The check
+passes when the maximum *relative* error
+$\max_{i,j}|J_\text{ana}[i,j] - J_\text{num}[i,j]| / \max(|J_\text{num}[i,j]|, 10^{-10})$
+falls below `tol = 10e-4`.  Returns a `dict` with both Jacobians and both
+error scalars so the caller can inspect any failing entries. 
+
+---
+
+### 4.2 Feature extraction (`utils/feats/`)
+
+The five modules form a layered hierarchy:
+
+```
+timewin_features        # core zero-padded window extractor
+  └── timewin_feature_extractor   # factory (wraps with fixed win/delta)
+        ├── finite_past_feature_extractor        # sets delta for history windows
+        └── finite_future_feature_extractor      # sets delta for future windows
+flatten_features        # applies any extractor to all (seq, t) pairs 
+```
+
+---
+
+#### `timewin_features.py`
+
+```python
+def timewin_features(
+    X          : np.ndarray,    # (d, T) sequence
+    t          : int,           # current time index (0-based)
+    win_length : int,           # window length
+    delta      : int,           # offset: wind starts at t + delta
+    begin_feats: bool = False   # if True, append boundary-indicator row
+) -> np.ndarray:                # flattened window, shape (d * win_length, )
+                                # or ((d+1) * win_length, ) with begin_feats
+```
+Extracts a contiguous window of `win_length` columns starting at column
+`t + delta` of `X`.  Frames that fall before index 0 or after index `T-1`
+are replaced with zeros (*zero-padding*). The result is flattened in
+**Fortran (column-major) order** to match MATLAB's `reshape` convention,
+which is essential for all downstream matrix operations.  Optionally appends
+a binary indicator row of length `win_length` that is 1 for zero-padded
+*leading* frames - useful when the model should distinguish real-zero from
+boundary-zero observations.
+
+---
+
+#### `timewin_feature_extractor.py`
+
+```python
+def timewin_feature_extractor(
+    win_length : int,
+    delta      : int,
+    extra_feats: bool = False
+) -> Callable:  # extractor(X,t) -> ndarray (d*win_length,)
+```
+
+A **factory** that binds `win_length`, `delta`, and `extra_feats` into a
+closure over `timewin_features`.  The returned callable has signature
+`extractor(X,t)` and is the type expected by `flatten_features`. All
+higher-level extractors ( `finite_past_feature_extractor`, 
+`finite_future_feature_extractor` ) return the output of this function.
+
+---
+
+#### `finite_past_feature_extractor.py`
+
+```python
+def finite_past_feature_extractor(
+    past_length: int,            # history window length L
+    extra_feats: bool = False
+    lag        : int = 1         # window ends at t - lag (default: t-1)
+) -> Callable:                   # extractor(X,t) -> ndarray (d*L,)
+```
+
+Computes the `delta` offset so that the window covers
+$[t - L - \text{lag} + 1,\; t - \text{lag}]$ - i.e. the last $L$ time steps
+before the current step (or further back if `lag > 1`).  The formula is:
+
+$$
+\delta = -(L + \text{lag} - 1)
+$$
+
+The default `lag = 1` gives history window $h_t = [o_{t-L}, \ldots, o_{t-1}]$
+as defined in paper S3.1.  `lag=0` would include the current observation
+(unused in standard PSR but available for experimentation).
+
+---
+
+#### `finite_future_feature_extractor.py`
+
+```python
+def finite_future_feature_extractor(
+    future_length: int,          # future window length k
+    extra_feats: bool = False,
+    lag        : int = 0         # window starts at t + lag (default: t)
+) -> Callable:                   # extractor(X,t) -> ndarray (d*k,)
+```
+
+Sets `delta = lag`, giving a window that covers
+$[t + \text{lag}, \; t + \text{lag} + k - 1]$.
+With the default `lag = 0` this is the test window
+$q_t = [o_t, \ldots, o_{t+k-1}]$ (paper S3.1). With `lag=1` it produces
+the *shifted* test window $q_{t+1}$ used to construct the extended-future
+feature $\psi_\eta$ and $\psi_\varepsilon$ in S3.2.
+
+---
+
+#### `flatten_features.py`
+
+```python
+def flatten_features(
+    X                 : List[np.ndarray],    # list of (d,T_i) sequences
+    feature_extractor : Callable,            # extractor(X_i,t) -> (d_feat,)
+    range_bounds      : Optional[List[int]]  # e.g. [-past_win, -future_win]
+) -> Tuple[
+    np.ndarray,   # Xf            shape (d_feat, N_total)
+    np.ndarray,   # series_index  shape (N_total,) 1-based
+    np.ndarray    # time_index    shape (N_total,) 0-based
+]:
+```
+
+The central data-collection routine for Algorithm 1.  Iterates over every
+sequence and every valid time step $t \in [\text{begin\_cut},\; T_i - \text{end\_cut})$,
+calls `feature_extractor(X_i,t)`, and stacks all results column-wise into a
+single matrix $X_f \in \mathbb{R}^{d_\text{feat} \times N}$.  The
+`range_bounds = [-L, -k]` argument translates to
+$\text{begin\_cut} = L$, $\text{end\_cut} = k$, so that only time steps where
+both the history window and the future window are within the sequence are
+included.  The returned `series_index` (1-based) and `time_index` (0-based)
+are used later to group columns by trajectory during the BPTT refinement.
+
+---
