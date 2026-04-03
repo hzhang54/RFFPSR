@@ -490,3 +490,65 @@ $$
 
 ---
 
+### 3.7 BPTT Refinement (Algorithm 2, Paper S4)
+
+The two-stage regression initialization minimizes per-step regression losses
+independently.  **BPTT** (Back-propagation Through Time) further reduces the
+*multi-step prediction loss*:
+
+$$
+\mathcal{L} = \frac{1}{T-1} \sum_{t=1}^{T-1}
+\left\| q_t^o - W_{s2,h}\, \operatorname{vec}(f_t \otimes \psi_{ta}(q_t^a)) \right\|^2.
+$$
+
+Three weight matrices are refined: $W_{s2,\text{ex}}, W_{s2,oo}$, and
+$W_{s2,h}$.  The backward pass through the filter equations (Eq. 11-17 in the
+paper) is implemented in `rffpsr_backprop`.  The gradients involve:
+
+- **Step A** (Eq. 11): $\partial \mathcal{L}/\partial C_\text{ex}$ via the chain
+$U_{st}^\top \operatorname{vec}(A\,C_{\varepsilon,ta})$
+- **Step B** (Eq. 12): $\nabla W_{s2,\text{ex}} = \operatorname{rowkron}(f^\top,\; \partial C_\text{ex})$
+- **Step C** (Eq. 13): $\partial \mathcal{L}/\partial v$ 
+- **Step D** (Eq. 14-16): gradient through the regularized solve for $v$
+- **Step E** (Eq. 17): $\nabla W_{s2,oo}$ 
+
+Key stability features:
+- **Gradient clipping**: if $\|\nabla\|_F > 10$, scale all gradients down.
+- **Early stopping**: validation MSE is monitored every `val_batch` iterations;
+step size is halved on deterioration, training stops when `rstep < min_rstep`
+or when validation error plateaus.
+
+```
+Algorithm 2 - BPTT Refinement
+_____________________________________________________________________
+Input: W_{s2_ex}, W_{s2_oo}, W_{s2_h} (from Algorithm 1)
+       Training trajectories, optional validation set
+       rstep, min_rstep, val_batch, refine iterations
+
+For i = 1 ... refine:
+    For each trajectory $\tau$:
+        1. Forward pass: filter $\tau$, record intermediates per step
+        2. Backward pass: bp_traj accumulates $\nabla$W_ex, $\nabla$W_oo, $\nabla$W_h
+        3. Gradient clip if ||$\nabla$|| > 10
+        4. W_ex -= rstep * $\nabla$W_ex
+           W_oo -= rstep * $\nabla$W_oo
+           W_h -= rstep * $\nabla$W_h
+    Re-filter states (train or val)
+    Check early stopping (every val_batch steps)
+
+Output: refined W_ex, W_oo, W_h (best by validation if val set given)
+_____________________________________________________________________
+```
+
+---
+
+### 3.8 Key References
+
+| Reference                                                                                                                                                      | Role in codebase                                             |
+|----------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------|
+| Hefny, Downey & Gordon (2018). *An Efficient, Expressive and Local Minima-free Method for Learning Controlled Dynamical Systems.* AAAI 2018 / arXiv:1702.03537 | Primary paper - all equation/section refs in code point here |
+| Rahimi & Recht (2007). *Random Features for Large-Scale kernel Machines.* NeurIPS                                                                              | Basis for `func_rff.py` - Eq. (1)                            |
+| Boots, Gordon & Gretton (2013). *Hilbert Space Embeddings of Predictive State Representations.* UAI                                                            | Predecessor HSE-PSR - motivates `train_hsepsr.py`            |
+| Song, Gretton & Fukumizu (2009). *Kernel Embeddings of Conditional Distributions.*                                                                             | Conditional mean embedding theory                            |
+| Halko, Martinsson & Tropp (2011). *Finding Structure with Randomness.* SIAM Review                                                                             | Basis for `rand_svd_f.py`                                    |
+| Gretton et al. (2012). *A Kernel Two-Sample Test.* JMLR                                                                                                        | Median bandwidth heuristic - `median_bandwidth.py`           |
