@@ -794,4 +794,148 @@ $\kappa(x,y) = \exp(-\|x-y\|^2 / (2s^2))$ when the rows of $W$ are drawn
 i.i.d. from $\mathcal{N}(0, s^{-2} I)$.  The approximation quality improves
 as $D \to \infty$; the paper uses $D = 1000$ by default.
 
+---
 
+#### `median_bandwidth.py`
+
+```python
+def median_bandwidth(
+    X          : np.ndarray,    # (d, N) data matrix
+    max_points : int = None,    # subsample cap (default: use all)
+) -> float:                     # estimated bandwidth s
+```
+
+Estimates the RBF kernel bandwidth using the **median heuristic**
+(Gretton et al., 2012):
+
+$$s = \sqrt{\operatorname{median}_{i < j} (\|x_i - x_j\|^2)}$$
+
+Pairwise squared distances are computed efficiently via
+$$\|x_i - x_j\|^2 = \|x_i\|^2 + \|x_j\|^2 - 2 x_i^\top x_j$$
+(identity involving the Gram matrix).  When $n > \text{max\_points}$, 
+a random subsample of `max_points` columns is used; in practice the
+training code passes `max_points=5000`.  Separate bandwidths are estimated
+for history ($s_h$), observation ($s_o$), action ($s_a$), test-obs ($s_{to}$),
+and test-act ($s_{ta}$) feature spaces.
+
+---
+
+### 4.4 Linear algebra primitivies (`utils/linalg/`)
+
+---
+
+#### `blk_func.py`
+
+```python
+def blk_func(
+    f   : Callable,         # f(s, e) -> ndarray (d, e-s) - 0-based, exclusive end
+    n   : int,              # total number of columns
+    blk : int = 1000        # block size
+) -> np.ndarray:            # assembled output (d, n)
+```
+
+Evaluates an *implicit* matrix column-by-column in blocks of size `blk`,
+avoiding the need to materialize the full $d \times n$ matrix at once.
+The only requirement on `f` is that `f(s, e)` returns columns `s` through
+`e-1` (0-indexed, exclusive end).  Used throughout `train_rffpsr.py` to
+apply projected feature maps to large datasets without exhausting memory -
+for example, to project the shifted test features
+$\psi_{ta}(q_{t+1}^a)$ when $N$ is large.
+
+---
+
+#### `kr_product.py`
+
+```python
+def kr_product(
+    X : np.ndarray,   # (mx, n)
+    Y : np.ndarray,   # (my, n)
+) -> np.ndarray:      # (mx*my, n) column-wise Kronecker product
+```
+
+Computes the **Khatri-Rao product** - the column-wise Kronecker product:
+
+$$
+Z[:,i] = X[:,i] \otimes Y[:,i] \in \mathbb{R}^{m_x m_y}
+$$
+
+Implemented via broadcasting:
+$Z = \operatorname{reshape}(X_{1,:,:} \cdot Y_{[:,1,:]},\; m_x m_y,\; n)$
+in a single vectorized operation.  This is the most frequently called utility
+in the entire codebase - it appears in every S1/S2 regression block, in the
+validation-error computation, in BPTT gradient accumulation, and in the
+horizon-prediction forward pass.
+
+---
+
+#### `rowkron.py`
+
+```python
+def rowkron(
+    x : np.ndarray,   # (1, n) or (n,) - first row vector
+    y : np.ndarray,   # (1, m) or (m,) - second row vector
+) -> np.ndarray:      # (1,n*m) - Kronecker product as row vector
+```
+
+Computes $z = x \otimes y$ for two *row vectors*, returning the result as a
+$(1, nm)$ row vector.  Implemented as the outer product $y^\top x$ reshaped:
+$z = \operatorname{reshape}(y^\top x,\; 1,\; nm)$. This is the *per-sample*
+counterpart to `kr_product`; it is used exclusively inside the BPTT backward
+pass (`rffpsr_backprop`, `bp_traj`) to accumulate gradient contributions for
+$W_{s2, \text{ex}}$, $W_{s2,oo}$, and $W_{s2,h}$ one time step at a time.
+
+---
+
+#### `rand_svd_f.py`
+
+```python
+def rand_svd_f(
+    f    : Callable,     # f(s,e) -> (d, e-s) column-sampling function
+    n    : int,          # total columns
+    k    : int,          # desired rank
+    it   : int = 2,      # power iteration count
+    slack: int = 0,      # extra oversampling dimensions
+    blk  : int = 1000    # block size
+) -> Tuple[
+    np.ndarray,          # U     shape (d, min(k,d)) left singular vectors
+    np.ndarray,          # S     shape (min(k,d),)   singular values
+    np.ndarray           # UX    shape (min(k,d), n) projected matrix U^T X
+]:
+```
+
+Implements the randomized SVD algorithm of Halko, Martinsson & Tropp (2011)
+for matrices that are too large to fit in memory.  The matrix $X$ is never
+materialized - only the colum function $f$ is required.  The algorithm:
+
+1. **Random sketch:** $K = X \Omega$, $\Omega \in \mathbb{R}^{n \times (k + \text{slack})}$ i.i.d. Gaussian.
+2. **Power iterations** ($\times$ `it`) $K \leftarrow X X^\top K$ (amplifies dominant singular directions).
+3. **Orthogonalize:** $Q = \operatorname{orth}(K)$
+4. **Small eigendecomposition:** $M = (Q^\top X)(Q^\top X)^\top$, $M = U_m S U_m^\top$.
+5. **Output:** $U = Q U_m$, $S$, $UX = U^\top X$.
+
+All matrix-vector products with $X$ are performed in blocks of size `blk`
+to avoid materializing the full $d \times n$ feature matrix.
+
+---
+
+#### `reg_divide.py`
+
+```python
+def reg_divide(
+    X    : np.ndarray,   # (..., d) numerator
+    Y    : np.ndarray,   # (d, d)   square denominator
+    lamb : float         # regularization lambda
+) -> np.ndarray:         # X @ inv(Y + lambda*I), same leading shape as X
+```
+
+Solves $Z(Y + \lambda I) = X$ for $Z$, i.e. computes the regularized
+matrix quotient $Z = X(Y + \lambda I)^{-1}$. Uses `np.linalg.solve`.
+(LU decomposition) which is more numerically stable than forming the
+explicit inverse.  Called in two places:
+
+1. **State computation** (two-stage regression): normalizes the estimated
+    cross-covariance matrices by the regularized action-feature Gram matrix.
+2. **Filter step 2** (`rffpsr_filter_core`): computes the observation-likelihood
+    weight $v = (C_{oo}^\top C_{oo} + \lambda I)^{-1} C_{oo}^\top \psi_o(o_t)$.
+
+---
