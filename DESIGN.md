@@ -939,3 +939,59 @@ explicit inverse.  Called in two places:
     weight $v = (C_{oo}^\top C_{oo} + \lambda I)^{-1} C_{oo}^\top \psi_o(o_t)$.
 
 ---
+
+### 4.5 Regression solvers (`utils/regression/`)
+
+---
+
+#### `ridge_regression.py`
+
+```python
+def ridge_regression(
+    X       : np.ndarray,          # (d_in, n)     input matrix
+    Y       : np.ndarray,          # (d_out, n)    target matrix
+    lam     : float,               # ridge lambda   
+    weights : np.ndarray = None,   # (n,)          optional per-sample weights
+) -> np.ndarray:                   # W  shape (d_out, d_in)
+```
+
+Solves the standard ridge regression problem in **dual form**:
+
+$$
+W = Y X^\top (X X^\top + \lambda I)^{-1}
+$$
+
+which requires only a $d_{\text{in}} \times d_{\text{in}}$ solve regardless
+of $n$.  This is the default solver for all regression steps in Algorithm 1
+(S1, S2, inverse feature maps) because it is exact and stable when $d_{\text{in}}$
+is at most a few thousand.  When optional `weights` are provided, the input is
+pre-multiplied ($\tilde{X} = X \cdot \operatorname{diag}(w)$) before forming
+the Gram matrix.
+
+---
+
+#### `cg_ridge.py`
+
+```python
+def cg_ridge(
+    X       : np.ndarray,          # (d_in, n)     input matrix
+    Y       : np.ndarray,          # (d_out, n)    target matrix
+    lam     : float,               # ridge lambda   
+    options : dict = None,         # {'maxit': int, 'eps': float}
+) -> np.ndarray:                   # W  shape (d_out, d_in)
+```
+
+An iterative alternative to `ridge_regression` using `scipy.sparse.linalg.cg`.
+(conjugate gradient). It selects the solver formulation based on the
+problem shape:
+
+| Condition                               | Formulation                                        | System size                            |
+|-----------------------------------------|----------------------------------------------------|----------------------------------------|
+| $d_{\text{in}} \le n$ (over-determined) | Primal: $(X X^\top + \lambda I)W^\top = X Y^\top$  | $(d_{\text{in}} \times d_{\text{in}})$ |
+| $d_{\text{in}} > n$ (under-determined)  | Dual: $(G^2 + \lambda G)\alpha = G$, $W = Y\alpha$ | $(n \times n)$                         |
+
+where $G = X X^\top$. CG is preferred over the direct solve when the input
+dimension is very large (e.g. the S2 regression in the `cond` path where the
+state-action Kronecker input can have dimension $K_s \cdot K_a$).  The
+`options` dict controls maximum interations (`maxit`, default 1000) and
+residual tolerance (`eps`, default $10^{-5}$).
